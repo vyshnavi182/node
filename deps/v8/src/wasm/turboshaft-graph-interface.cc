@@ -26,13 +26,13 @@
 #include "src/wasm/function-compiler.h"
 #include "src/wasm/inlining-tree.h"
 #include "src/wasm/jump-table-assembler.h"
-#include "src/wasm/memory-tracing.h"
 #include "src/wasm/turboshaft-graph-interface-inl.h"
 #include "src/wasm/wasm-engine.h"
 #include "src/wasm/wasm-linkage.h"
 #include "src/wasm/wasm-objects-inl.h"
 #include "src/wasm/wasm-objects.h"
 #include "src/wasm/wasm-opcodes-inl.h"
+#include "src/wasm/wasm-tracing.h"
 
 namespace v8::internal::wasm {
 
@@ -44,7 +44,6 @@ using compiler::MemoryAccessKind;
 using compiler::Operator;
 using compiler::TrapId;
 using TSBlock = compiler::turboshaft::Block;
-using compiler::turboshaft::BuiltinCallDescriptor;
 using compiler::turboshaft::CallOp;
 using compiler::turboshaft::ConditionWithHint;
 using compiler::turboshaft::ConstantOp;
@@ -83,6 +82,7 @@ using compiler::turboshaft::WasmTypeCastOp;
 using compiler::turboshaft::Word32;
 using compiler::turboshaft::WordPtr;
 using compiler::turboshaft::WordRepresentation;
+using compiler::turboshaft::deprecated::BuiltinCallDescriptor;
 
 namespace {
 
@@ -293,6 +293,24 @@ class TurboshaftGraphBuildingInterface
       while (index < decoder->num_locals() &&
              decoder->local_type(index) == type) {
         ssa_env_[index++] = op;
+      }
+    }
+
+    // For type assertions the optimization pass needs to insert type checks
+    // (which include control-flow once lowered) into the graph. These checks
+    // need to be inserted *after* all parameters are defined because parameter
+    // operations need to be placed in the first block.
+    // So we eagerly insert annotations here that the optimizer will then
+    // convert into type checks with --wasm-assert-types. Note that adding these
+    // annotations should otherwise not change the inferred types as the
+    // optimizer also types Parameter operations directly.
+    if (v8_flags.wasm_assert_types) [[unlikely]] {
+      for (size_t i = 0; i < decoder->sig_->parameter_count(); ++i) {
+        ValueType expected_type = decoder->sig_->GetParam(i);
+        if (expected_type.is_ref()) {
+          ssa_env_[i] =
+              __ AnnotateWasmType(V<Object>::Cast(ssa_env_[i]), expected_type);
+        }
       }
     }
 
@@ -776,7 +794,8 @@ class TurboshaftGraphBuildingInterface
             PendingLoopPhiOp& pending_phi = to->Cast<PendingLoopPhiOp>();
             OpIndex replaced = __ output_graph().Index(*to);
             __ output_graph().Replace<compiler::turboshaft::PhiOp>(
-                replaced, base::VectorOf({pending_phi.first(), ssa_env_[*it]}),
+                replaced,
+                base::VectorOf<OpIndex>({pending_phi.first(), ssa_env_[*it]}),
                 pending_phi.rep);
           }
           for (uint32_t i = 0; i < block->br_merge()->arity; ++i, ++to) {
@@ -3758,19 +3777,10 @@ class TurboshaftGraphBuildingInterface
               const Value args[], Value returns[]) {
     __ TrapIf(__ IsNull(cont_ref.op, cont_ref.type),
               TrapId::kTrapNullDereference);
-    const FunctionSig* sig =
-        decoder->module_->signature(imm.cont_type->contfun_typeindex());
     V<WordPtr> stack = __ LoadExternalPointerFromObject(
         cont_ref.op, WasmContinuationObject::kStackOffset, kWasmStackMemoryTag);
-    // TODO(thibaudm): Switch to the target stack here.
-    V<WordPtr> pc = __ Load(stack, LoadOp::Kind::RawAligned(),
-                            MemoryRepresentation::UintPtr(), kStackPcOffset);
-    const TSCallDescriptor* descriptor = TSCallDescriptor::Create(
-        compiler::GetWasmCallDescriptor(
-            __ graph_zone(), sig, compiler::WasmCallKind::kWasmContinuation),
-        compiler::CanThrow::kYes, compiler::LazyDeoptOnThrow::kNo,
-        __ graph_zone());
-    __ Call(pc, {stack}, descriptor);
+    CallBuiltinThroughJumptable<BuiltinCallDescriptor::WasmFXResume>(decoder,
+                                                                     {stack});
   }
 
   void ResumeThrow(FullDecoder* decoder,
@@ -5127,36 +5137,20 @@ class TurboshaftGraphBuildingInterface
     }
   }
 
-  void RefGetDesc(FullDecoder* decoder, const Value& ref_val, Value* result) {
-    const ValueType type = ref_val.type;
-    const StructType* struct_type =
-        decoder->module_->struct_type(type.ref_index());
+  void RefGetDesc(FullDecoder* decoder, ModuleTypeIndex struct_index,
+                  const Value& ref_val, Value* result) {
+    // We need {struct_index} because it's guaranteed to be a valid index of
+    // a type that has a descriptor, whereas {ref_val.type} could be "null".
+    const StructType* struct_type = decoder->module_->struct_type(struct_index);
     result->op = __ StructGet(
-        V<WasmStructNullable>::Cast(ref_val.op), struct_type, type.ref_index(),
+        V<WasmStructNullable>::Cast(ref_val.op), struct_type, struct_index,
         StructGetOp::kDescFieldIndex, true /* "signed" is default */,
-        type.is_nullable() ? compiler::kWithNullCheck
-                           : compiler::kWithoutNullCheck,
+        ref_val.type.is_nullable() ? compiler::kWithNullCheck
+                                   : compiler::kWithoutNullCheck,
         {});
   }
 
   using SubtypeCheckExactness = compiler::SubtypeCheckExactness;
-
-  SubtypeCheckExactness GetExactness(FullDecoder* decoder, HeapType target) {
-    // For exact target types, an exact match is needed for correctness;
-    // for final target types, it's a performance optimization.
-    // For types with custom descriptors, we need to look at their immediate
-    // supertype instead of the object's map.
-    // See Liftoff's {SubtypeCheck()} for detailed explanation. This function
-    // here is not called for instructions using custom descriptors
-    // (ref.cast_desc, br_on_cast_desc{,_fail}).
-    const TypeDefinition& type = decoder->module_->type(target.ref_index());
-    if (type.is_final || target.is_exact()) {
-      return type.has_descriptor()
-                 ? SubtypeCheckExactness::kExactMatchLastSupertype
-                 : SubtypeCheckExactness::kExactMatchOnly;
-    }
-    return SubtypeCheckExactness::kMayBeSubtype;
-  }
 
   void RefTest(FullDecoder* decoder, HeapType target, const Value& object,
                Value* result, bool null_succeeds) {
@@ -5166,7 +5160,7 @@ class TurboshaftGraphBuildingInterface
         object.type,
         ValueType::RefMaybeNull(target,
                                 null_succeeds ? kNullable : kNonNullable),
-        GetExactness(decoder, target)};
+        compiler::GetExactness(decoder->module_, target)};
     result->op = __ WasmTypeCheck(object.op, rtt, config);
   }
 
@@ -5175,7 +5169,7 @@ class TurboshaftGraphBuildingInterface
     compiler::WasmTypeCheckConfig config{
         object.type, ValueType::RefMaybeNull(
                          type, null_succeeds ? kNullable : kNonNullable)};
-    V<Map> rtt = OpIndex::Invalid();
+    OptionalV<Map> rtt = OpIndex::Invalid();
     result->op = __ WasmTypeCheck(object.op, rtt, config);
   }
 
@@ -5189,7 +5183,8 @@ class TurboshaftGraphBuildingInterface
     V<Map> rtt = __ RttCanon(managed_object_maps(target.is_shared()),
                              target.ref_index());
     compiler::WasmTypeCheckConfig config{
-        object.type, target, GetExactness(decoder, target.heap_type())};
+        object.type, target,
+        compiler::GetExactness(decoder->module_, target.heap_type())};
     result->op = __ WasmTypeCast(object.op, rtt, config);
   }
 
@@ -5233,8 +5228,9 @@ class TurboshaftGraphBuildingInterface
         target_type, null_succeeds ? kNullable : kNonNullable);
     V<Map> rtt = __ RttCanon(managed_object_maps(target.is_shared()),
                              target_type.ref_index());
-    compiler::WasmTypeCheckConfig config{object.type, target,
-                                         GetExactness(decoder, target_type)};
+    compiler::WasmTypeCheckConfig config{
+        object.type, target,
+        compiler::GetExactness(decoder->module_, target_type)};
     return BrOnCastImpl(decoder, rtt, config, object, value_on_branch, br_depth,
                         null_succeeds);
   }
@@ -5270,8 +5266,9 @@ class TurboshaftGraphBuildingInterface
         target_type, null_succeeds ? kNullable : kNonNullable);
     V<Map> rtt = __ RttCanon(managed_object_maps(target.is_shared()),
                              target_type.ref_index());
-    compiler::WasmTypeCheckConfig config{object.type, target,
-                                         GetExactness(decoder, target_type)};
+    compiler::WasmTypeCheckConfig config{
+        object.type, target,
+        compiler::GetExactness(decoder->module_, target_type)};
     return BrOnCastFailImpl(decoder, rtt, config, object, value_on_fallthrough,
                             br_depth, null_succeeds);
   }
@@ -7803,8 +7800,7 @@ class TurboshaftGraphBuildingInterface
 
         if (needs_null_check) {
           // Trap on null element.
-          __ TrapIf(__ Word32Equal(loaded_sig, -1),
-                    TrapId::kTrapFuncSigMismatch);
+          __ TrapIf(__ Word32Equal(loaded_sig, -1), TrapId::kTrapNullFunc);
         }
         bool shared = decoder->module_->type(sig_index).is_shared;
         V<Map> formal_rtt = __ RttCanon(managed_object_maps(shared), sig_index);
@@ -7859,7 +7855,7 @@ class TurboshaftGraphBuildingInterface
           __ Load(dispatch_table, dispatch_table_entry_offset,
                   LoadOp::Kind::TaggedBase(), MemoryRepresentation::Uint32(),
                   WasmDispatchTable::kSigBias);
-      __ TrapIf(__ Word32Equal(-1, loaded_sig), TrapId::kTrapFuncSigMismatch);
+      __ TrapIf(__ Word32Equal(-1, loaded_sig), TrapId::kTrapNullFunc);
     }
 
     /* Step 4: Extract ref and target. */
@@ -8378,7 +8374,8 @@ class TurboshaftGraphBuildingInterface
   OpIndex AsmjsLoadMem(V<Word32> index, MemoryRepresentation repr) {
     // Since asmjs does not support unaligned accesses, we can bounds-check
     // ignoring the access size.
-    Variable result = __ NewVariable(repr.ToRegisterRepresentation());
+    Variable result =
+        __ NewLoopInvariantVariable(repr.ToRegisterRepresentation());
 
     // Technically, we should do a signed 32-to-ptr extension here. However,
     // that is an explicit instruction, whereas unsigned extension is implicit.
@@ -8545,6 +8542,8 @@ class TurboshaftGraphBuildingInterface
       struct_value = CallBuiltinThroughJumptable<
           BuiltinCallDescriptor::WasmAllocateDescriptorStruct>(
           decoder, {rtt, __ Word32Constant(imm.index.index), first_field});
+      struct_value = __ AnnotateWasmType(
+          struct_value, ValueType::Ref(decoder->module_->heap_type(imm.index)));
     } else {
       const bool shared = type.is_shared;
       struct_value = __ WasmAllocateStruct(rtt, imm.struct_type, shared);
@@ -9026,7 +9025,7 @@ class TurboshaftGraphBuildingInterface
   std::unique_ptr<AssumptionsJournal>* assumptions_;
   ZoneVector<WasmInliningPosition>* inlining_positions_;
   uint8_t inlining_id_ = kNoInliningId;
-  ZoneVector<OpIndex> ssa_env_;
+  ZoneVector<V<Any>> ssa_env_;
   compiler::NullCheckStrategy null_check_strategy_ =
       trap_handler::IsTrapHandlerEnabled() && V8_STATIC_ROOTS_BOOL
           ? compiler::NullCheckStrategy::kTrapHandler

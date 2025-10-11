@@ -13,6 +13,7 @@
 #include "src/debug/debug-interface.h"
 #include "src/debug/debug-wasm-objects-inl.h"
 #include "src/execution/frames-inl.h"
+#include "src/execution/isolate.h"
 #include "src/objects/allocation-site.h"
 #include "src/objects/property-descriptor.h"
 #include "src/wasm/canonical-types.h"
@@ -104,7 +105,8 @@ struct IndexedDebugProxy {
                                                make_map_non_extensible);
     auto object = isolate->factory()->NewFastOrSlowJSObjectFromMap(
         object_map, 0, AllocationType::kYoung,
-        DirectHandle<AllocationSite>::null(), NewJSObjectType::kAPIWrapper);
+        DirectHandle<AllocationSite>::null(),
+        NewJSObjectType::kMaybeEmbedderFieldsAndApiWrapper);
     object->SetEmbedderField(kProviderField, *provider);
     return object;
   }
@@ -237,7 +239,8 @@ struct NamedDebugProxy : IndexedDebugProxy<T, id, Provider> {
       if (table->FindEntry(isolate, key).is_found()) continue;
       DirectHandle<Smi> value(Smi::FromInt(index), isolate);
       table = NameDictionary::Add(isolate, table, key, value,
-                                  PropertyDetails::Empty());
+                                  PropertyDetails::Empty())
+                  .ToHandleChecked();
     }
     Object::SetProperty(isolate, holder, symbol, table).Check();
     return table;
@@ -563,7 +566,8 @@ class ContextProxyPrototype {
         GetOrCreateDebugProxyMap(isolate, kContextProxy, &CreateTemplate);
     return isolate->factory()->NewJSObjectFromMap(
         object_map, AllocationType::kYoung,
-        DirectHandle<AllocationSite>::null(), NewJSObjectType::kAPIWrapper);
+        DirectHandle<AllocationSite>::null(),
+        NewJSObjectType::kMaybeEmbedderFieldsAndApiWrapper);
   }
 
  private:
@@ -849,8 +853,8 @@ DirectHandle<String> WasmSimd128ToString(Isolate* isolate, Simd128 s128) {
   // https://github.com/WebAssembly/simd/blob/master/proposals/simd/TextSIMD.md
   base::EmbeddedVector<char, 50> buffer;
   auto i32x4 = s128.to_i32x4();
-  SNPrintF(buffer, "i32x4 0x%08X 0x%08X 0x%08X 0x%08X", i32x4.val[0],
-           i32x4.val[1], i32x4.val[2], i32x4.val[3]);
+  SNPrintF(buffer, "i32x4 0x%08X 0x%08X 0x%08X 0x%08X", i32x4[0], i32x4[1],
+           i32x4[2], i32x4[3]);
   return isolate->factory()->NewStringFromAsciiChecked(buffer.data());
 }
 

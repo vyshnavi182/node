@@ -26,7 +26,7 @@ inline void MarkingBitmap::SetBitsInCell<AccessMode::NON_ATOMIC>(
 template <>
 inline void MarkingBitmap::SetBitsInCell<AccessMode::ATOMIC>(
     uint32_t cell_index, MarkBit::CellType mask) {
-  base::AsAtomicWord::Relaxed_SetBits(cells() + cell_index, mask, mask);
+  base::AsAtomicWord::Relaxed_SetBits(cells() + cell_index, mask);
 }
 
 template <>
@@ -149,13 +149,6 @@ inline void MarkingBitmap::ClearRange(MarkBitIndex start_index,
 }
 
 // static
-MarkingBitmap* MarkingBitmap::FromAddress(Address address) {
-  Address metadata_address =
-      MutablePageMetadata::FromAddress(address)->MetadataAddress();
-  return Cast(metadata_address + MutablePageMetadata::MarkingBitmapOffset());
-}
-
-// static
 MarkingBitmap* MarkingBitmap::FromAddress(const Isolate* isolate,
                                           Address address) {
   Address metadata_address =
@@ -164,14 +157,9 @@ MarkingBitmap* MarkingBitmap::FromAddress(const Isolate* isolate,
 }
 
 // static
-MarkBit MarkingBitmap::MarkBitFromAddress(Address address) {
-  return MarkBitFromAddress(FromAddress(address), address);
-}
-
-// static
 MarkBit MarkingBitmap::MarkBitFromAddress(MarkingBitmap* bitmap,
                                           Address address) {
-  DCHECK_EQ(bitmap, FromAddress(address));
+  DCHECK_EQ(bitmap, FromAddress(Isolate::Current(), address));
   const auto index = AddressToIndex(address);
   const auto mask = IndexInCellMask(index);
   MarkBit::CellType* cell = bitmap->cells() + IndexToCell(index);
@@ -290,16 +278,6 @@ inline Address MarkingBitmap::FindPreviousValidObject(const PageMetadata* page,
 }
 
 // static
-MarkBit MarkBit::From(Address address) {
-  return MarkingBitmap::MarkBitFromAddress(address);
-}
-
-// static
-MarkBit MarkBit::From(Tagged<HeapObject> heap_object) {
-  return MarkingBitmap::MarkBitFromAddress(heap_object.ptr());
-}
-
-// static
 MarkBit MarkBit::From(const Isolate* isolate, Address address) {
   return MarkingBitmap::MarkBitFromAddress(isolate, address);
 }
@@ -337,7 +315,7 @@ std::optional<MarkingHelper::WorklistTarget> MarkingHelper::ShouldMarkObject(
 
 // static
 MarkingHelper::LivenessMode MarkingHelper::GetLivenessMode(
-    Heap* heap, Tagged<HeapObject> object) {
+    const Heap* heap, Tagged<HeapObject> object) {
   const auto* chunk = MemoryChunk::FromHeapObject(object);
   const auto flags = chunk->GetFlags();
   if (flags & MemoryChunk::READ_ONLY_HEAP) {
@@ -362,8 +340,8 @@ MarkingHelper::LivenessMode MarkingHelper::GetLivenessMode(
 
 // static
 template <typename MarkingStateT>
-bool MarkingHelper::IsMarkedOrAlwaysLive(Heap* heap,
-                                         MarkingStateT* marking_state,
+bool MarkingHelper::IsMarkedOrAlwaysLive(const Heap* heap,
+                                         const MarkingStateT* marking_state,
                                          Tagged<HeapObject> object) {
   return (MarkingHelper::GetLivenessMode(heap, object) ==
           MarkingHelper::LivenessMode::kAlwaysLive) ||
@@ -372,9 +350,9 @@ bool MarkingHelper::IsMarkedOrAlwaysLive(Heap* heap,
 
 // static
 template <typename MarkingStateT>
-bool MarkingHelper::IsUnmarkedAndNotAlwaysLive(Heap* heap,
-                                               MarkingStateT* marking_state,
-                                               Tagged<HeapObject> object) {
+bool MarkingHelper::IsUnmarkedAndNotAlwaysLive(
+    const Heap* heap, const MarkingStateT* marking_state,
+    Tagged<HeapObject> object) {
   return (MarkingHelper::GetLivenessMode(heap, object) !=
           MarkingHelper::LivenessMode::kAlwaysLive) &&
          marking_state->IsUnmarked(object);

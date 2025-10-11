@@ -14,7 +14,6 @@
 #include "src/base/hashing.h"
 #include "src/base/vector.h"
 #include "src/codegen/linkage-location.h"
-#include "src/codegen/register.h"
 #include "src/codegen/signature.h"
 #include "src/wasm/signature-hashing.h"
 #include "src/wasm/value-type.h"
@@ -37,6 +36,20 @@ enum SubtypeCheckExactness : uint8_t {
   kExactMatchOnly,
   kExactMatchLastSupertype,
 };
+V8_INLINE std::ostream& operator<<(std::ostream& os,
+                                   SubtypeCheckExactness const& exactness) {
+  switch (exactness) {
+    case kMayBeSubtype:
+      return os << "kMayBeSubtype";
+    case kExactMatchOnly:
+      return os << "kExactMatchOnly";
+    case kExactMatchLastSupertype:
+      return os << "kExactMatchLastSupertype";
+  }
+}
+
+SubtypeCheckExactness GetExactness(const wasm::WasmModule* module,
+                                   wasm::HeapType target);
 
 // If {to} is nullable, it means that null passes the check.
 // {from} may change in compiler optimization passes as the object's type gets
@@ -50,7 +63,7 @@ struct WasmTypeCheckConfig {
 
 V8_INLINE std::ostream& operator<<(std::ostream& os,
                                    WasmTypeCheckConfig const& p) {
-  return os << p.from.name() << " -> " << p.to.name();
+  return os << p.from.name() << " -> " << p.to.name() << " @" << p.exactness;
 }
 
 V8_INLINE size_t hash_value(WasmTypeCheckConfig const& p) {

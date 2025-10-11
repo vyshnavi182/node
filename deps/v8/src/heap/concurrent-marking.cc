@@ -180,10 +180,10 @@ class ConcurrentMarkingVisitor final
     return false;
   }
 
-  template <typename TSlot>
+  template <typename TSlot, RecordYoungSlot kRecordYoung = RecordYoungSlot::kNo>
   void RecordSlot(Tagged<HeapObject> object, TSlot slot,
                   Tagged<HeapObject> target) {
-    MarkCompactCollector::RecordSlot(object, slot, target);
+    MarkCompactCollector::RecordSlot<TSlot, kRecordYoung>(object, slot, target);
   }
 
   void IncrementLiveBytesCached(MutablePageMetadata* chunk, intptr_t by) {
@@ -324,6 +324,23 @@ class ConcurrentMarking::JobTaskMinor : public v8::JobTask {
   const uint64_t trace_id_;
 };
 
+class ConcurrentMarking::MinorMarkingState {
+ public:
+  ~MinorMarkingState() { DCHECK_EQ(0, active_markers_); }
+
+  V8_INLINE void MarkerStarted() {
+    active_markers_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  // Returns true if all markers are done.
+  V8_INLINE bool MarkerDone() {
+    return active_markers_.fetch_sub(1, std::memory_order_relaxed) == 1;
+  }
+
+ private:
+  std::atomic<int> active_markers_{0};
+};
+
 ConcurrentMarking::ConcurrentMarking(Heap* heap, WeakObjects* weak_objects)
     : heap_(heap), weak_objects_(weak_objects) {
 #ifndef V8_ATOMIC_OBJECT_FIELD_WRITES
@@ -438,8 +455,8 @@ void ConcurrentMarking::RunMajor(JobDelegate* delegate,
           }
           const auto visited_size = visitor.Visit(map, object);
           visitor.IncrementLiveBytesCached(
-              MutablePageMetadata::cast(
-                  MemoryChunkMetadata::FromHeapObject(object)),
+              MutablePageMetadata::cast(MemoryChunkMetadata::FromHeapObject(
+                  heap_->isolate(), object)),
               ALIGN_TO_ALLOCATION_ALIGNMENT(visited_size));
           if (is_per_context_mode) {
             native_context_stats.IncrementSize(
@@ -477,23 +494,6 @@ void ConcurrentMarking::RunMajor(JobDelegate* delegate,
 
   DCHECK(task_state->local_pretenuring_feedback.empty());
 }
-
-class ConcurrentMarking::MinorMarkingState {
- public:
-  ~MinorMarkingState() { DCHECK_EQ(0, active_markers_); }
-
-  V8_INLINE void MarkerStarted() {
-    active_markers_.fetch_add(1, std::memory_order_relaxed);
-  }
-
-  // Returns true if all markers are done.
-  V8_INLINE bool MarkerDone() {
-    return active_markers_.fetch_sub(1, std::memory_order_relaxed) == 1;
-  }
-
- private:
-  std::atomic<int> active_markers_{0};
-};
 
 namespace {
 
@@ -549,7 +549,7 @@ V8_INLINE size_t ConcurrentMarking::RunMinorImpl(JobDelegate* delegate,
         if (visited_size) {
           current_marked_bytes += visited_size;
           visitor.IncrementLiveBytesCached(
-              MutablePageMetadata::FromHeapObject(heap_object),
+              MutablePageMetadata::FromHeapObject(isolate, heap_object),
               ALIGN_TO_ALLOCATION_ALIGNMENT(visited_size));
         }
       }

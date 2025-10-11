@@ -116,15 +116,10 @@ class V8_NODISCARD SharedStringAccessGuardIfNeeded {
   static Isolate* GetIsolateIfNeeded(Tagged<String> str) {
     if (!IsNeeded(str)) return nullptr;
 
-    Isolate* isolate;
-    if (!GetIsolateFromHeapObject(str, &isolate)) {
-      // If we can't get the isolate from the String, it must be read-only.
-      DCHECK(ReadOnlyHeap::Contains(str));
-      return nullptr;
-    }
-    // TODO(431584880): Replace `GetIsolateFromHeapObject` by
-    // `Isolate::Current()`.
-    DCHECK_EQ(isolate, Isolate::TryGetCurrent());
+    DCHECK(!ReadOnlyHeap::Contains(str));
+    Isolate* isolate = Isolate::Current();
+    if (str->IsShared()) isolate = isolate->shared_space_isolate();
+    DCHECK_EQ(isolate->heap(), Heap::FromWritableHeapObject(str));
     return isolate;
   }
 
@@ -1081,7 +1076,7 @@ String::FlatContent String::GetFlatContent(
 template <typename T, template <typename> typename HandleType>
   requires(std::is_convertible_v<HandleType<T>, DirectHandle<String>>)
 HandleType<String> String::Share(Isolate* isolate, HandleType<T> string) {
-  DCHECK(v8_flags.shared_string_table);
+  DCHECK(v8_flags.shared_strings);
   MaybeDirectHandle<Map> new_map;
   switch (
       isolate->factory()->ComputeSharingStrategyForString(string, &new_map)) {

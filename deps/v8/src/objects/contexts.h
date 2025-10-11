@@ -164,6 +164,7 @@ enum ContextLookupFlags {
     initial_disposable_stack_prototype)                                        \
   V(INITIAL_MAP_ITERATOR_PROTOTYPE_INDEX, JSObject,                            \
     initial_map_iterator_prototype)                                            \
+  V(INITIAL_MAP_PROTOTYPE_INDEX, JSObject, initial_map_prototype)              \
   V(INITIAL_MAP_PROTOTYPE_MAP_INDEX, Map, initial_map_prototype_map)           \
   V(INITIAL_OBJECT_PROTOTYPE_INDEX, JSObject, initial_object_prototype)        \
   V(INITIAL_SET_ITERATOR_PROTOTYPE_INDEX, JSObject,                            \
@@ -174,6 +175,7 @@ enum ContextLookupFlags {
   V(INITIAL_STRING_ITERATOR_PROTOTYPE_INDEX, JSObject,                         \
     initial_string_iterator_prototype)                                         \
   V(INITIAL_STRING_PROTOTYPE_INDEX, JSObject, initial_string_prototype)        \
+  V(INITIAL_WEAKMAP_PROTOTYPE_INDEX, JSObject, initial_weakmap_prototype)      \
   V(INITIAL_WEAKMAP_PROTOTYPE_MAP_INDEX, Map, initial_weakmap_prototype_map)   \
   V(INITIAL_WEAKSET_PROTOTYPE_MAP_INDEX, Map, initial_weakset_prototype_map)   \
   V(INTL_COLLATOR_FUNCTION_INDEX, JSFunction, intl_collator_function)          \
@@ -372,8 +374,6 @@ enum ContextLookupFlags {
   V(WASM_SUSPENDING_PROTOTYPE, JSObject, wasm_suspending_prototype)            \
   V(WASM_MEMORY_MAP_DESCRIPTOR_CONSTRUCTOR_INDEX, JSFunction,                  \
     wasm_memory_map_descriptor_constructor)                                    \
-  V(WASM_DESCRIPTOR_OPTIONS_CONSTRUCTOR_INDEX, JSFunction,                     \
-    wasm_descriptor_options_constructor)                                       \
   V(TEMPLATE_WEAKMAP_INDEX, HeapObject, template_weakmap)                      \
   V(TYPED_ARRAY_FUN_INDEX, JSFunction, typed_array_function)                   \
   V(TYPED_ARRAY_PROTOTYPE_INDEX, JSObject, typed_array_prototype)              \

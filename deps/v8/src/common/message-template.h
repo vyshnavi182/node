@@ -28,8 +28,8 @@ namespace internal {
   T(WrongValueType, "Internal error. Wrong value type.")                       \
   T(IcuError, "Internal error. Icu error.")                                    \
   /* TypeError */                                                              \
-  T(ApplyNonFunction,                                                          \
-    "Function.prototype.apply was called on %, which is % and not a "          \
+  T(TargetNonFunction,                                                         \
+    "% was called on %, which is % and not a "                                 \
     "function")                                                                \
   T(ArgumentsDisallowedInInitializerAndStaticBlock,                            \
     "'arguments' is not allowed in class field initializer or static "         \
@@ -698,7 +698,8 @@ namespace internal {
   T(WasmTrapRemByZero, "remainder by zero")                                    \
   T(WasmTrapFloatUnrepresentable, "float unrepresentable in integer range")    \
   T(WasmTrapTableOutOfBounds, "table index is out of bounds")                  \
-  T(WasmTrapFuncSigMismatch, "null function or function signature mismatch")   \
+  T(WasmTrapNullFunc, "null function")                                         \
+  T(WasmTrapFuncSigMismatch, "function signature mismatch")                    \
   T(WasmTrapMultiReturnLengthMismatch, "multi-return length mismatch")         \
   T(WasmTrapJSTypeError, "type incompatibility when transforming from/to JS")  \
   T(WasmTrapDataSegmentOutOfBounds, "data segment out of bounds")              \

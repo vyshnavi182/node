@@ -338,8 +338,35 @@ void Int32MultiplyOverflownBits::GenerateCode(MaglevAssembler* masm,
   Register out = ToRegister(result());
 
   // TODO(leszeks): peephole optimise multiplication by a constant.
-  __ Mul32(out, left, right);
-  __ srai(out, out, 32);
+#ifdef V8_TARGET_ARCH_RISCV64
+  __ Mulh32(out, left, right);
+#elif V8_TARGET_ARCH_RISCV32
+  __ Mulh(out, left, right);
+#else
+  UNREACHABLE();
+#endif
+}
+
+void Int32Increment::SetValueLocationConstraints() {
+  UseRegister(value_input());
+  DefineAsRegister(this);
+}
+void Int32Increment::GenerateCode(MaglevAssembler* masm,
+                                  const ProcessingState& state) {
+  Register value = ToRegister(value_input());
+  Register out = ToRegister(result());
+  __ addiw(out, value, 1);
+}
+
+void Int32Decrement::SetValueLocationConstraints() {
+  UseRegister(value_input());
+  DefineAsRegister(this);
+}
+void Int32Decrement::GenerateCode(MaglevAssembler* masm,
+                                  const ProcessingState& state) {
+  Register value = ToRegister(value_input());
+  Register out = ToRegister(result());
+  __ addiw(out, value, -1);
 }
 
 void Int32Divide::SetValueLocationConstraints() {
@@ -947,6 +974,18 @@ void HoleyFloat64ToMaybeNanFloat64::GenerateCode(MaglevAssembler* masm,
   __ FPUCanonicalizeNaN(ToDoubleRegister(result()), ToDoubleRegister(input()));
 }
 
+void Float64ToHoleyFloat64::SetValueLocationConstraints() {
+  UseRegister(input());
+  DefineAsRegister(this);
+}
+void Float64ToHoleyFloat64::GenerateCode(MaglevAssembler* masm,
+                                         const ProcessingState& state) {
+  // A Float64 value could contain a NaN with the bit pattern that has a special
+  // interpretation in the HoleyFloat64 representation, so we need to canicalize
+  // those before changing representation.
+  __ FPUCanonicalizeNaN(ToDoubleRegister(result()), ToDoubleRegister(input()));
+}
+
 namespace {
 
 enum class ReduceInterruptBudgetType { kLoop, kReturn };
@@ -954,6 +993,11 @@ enum class ReduceInterruptBudgetType { kLoop, kReturn };
 void HandleInterruptsAndTiering(MaglevAssembler* masm, ZoneLabelRef done,
                                 Node* node, ReduceInterruptBudgetType type,
                                 Register scratch0) {
+  if (v8_flags.verify_write_barriers) {
+    // The safepoint/interrupt might trigger GC.
+    __ ResetLastYoungAllocation();
+  }
+
   // For loops, first check for interrupts. Don't do this for returns, as we
   // can't lazy deopt to the end of a return.
   if (type == ReduceInterruptBudgetType::kLoop) {
